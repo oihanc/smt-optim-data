@@ -1,0 +1,106 @@
+name: Release
+
+# Builds one zip archive per dataset in datasets/ and publishes them as assets of a GitHub release.
+#
+# Two ways to release:
+#   - Push a tag:   git tag v0.1.0 && git push origin v0.1.0
+#   - From GitHub:  Actions -> Release -> Run workflow, and enter the version (e.g. v0.1.0).
+#                   The tag is created on the latest commit of the default branch.
+#
+# Pull requests only check that the archives can be built.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  pull_request:
+    paths:
+      - "datasets/**"
+      - "scripts/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.1.0 (the tag is created if it does not exist)"
+        required: true
+        type: string
+      draft:
+        description: "Create the release as a draft, to review it before publishing"
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark the release as a pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch)
+              # a release must come from the default branch, not from a work-in-progress branch
+              if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+                echo "::error::Run this workflow from '$DEFAULT_BRANCH' (currently '$REF_NAME')."
+                exit 1
+              fi
+              VERSION="$INPUT_VERSION"
+              ;;
+            push)
+              VERSION="$REF_NAME"
+              ;;
+            *)
+              VERSION="v0.0.0-test"
+              ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build archives
+        run: python scripts/build_release.py --version "${{ steps.version.outputs.version }}" --out dist
+
+      - name: Refuse to overwrite an existing release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "::error::Release $VERSION already exists. Published data must not change: use a new version."
+            exit 1
+          fi
+
+      - name: Create release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flags=()
+          [ "$DRAFT" = "true" ] && flags+=(--draft)
+          # versions with a suffix (v0.2.0-rc1) are pre-releases
+          if [ "$PRERELEASE" = "true" ] || [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+
+          gh release create "$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --generate-notes \
+            "${flags[@]}"

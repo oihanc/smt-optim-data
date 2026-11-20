@@ -1,0 +1,6 @@
+# Template: copy to datasets/<name>/dataset.toml. Folders starting with "_" are not released.
+# Only `description` is read by scripts/build_release.py (it is copied into manifest.json).
+
+description = ""   # one sentence: what the data is and which smt-optim example uses it
+license = ""       # SPDX identifier, e.g. "CC-BY-4.0"
+source = ""        # optional: script or smt-optim version that generated the data
